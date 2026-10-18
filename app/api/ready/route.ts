@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 export const dynamic = 'force-dynamic'
 
 // Readiness: only receive traffic when the database is reachable. Gemini is not
-// checked — without it the app still serves logins, history and sample mode.
+// checked. Without it the app still serves logins, history and sample mode.
 export async function GET() {
   try {
     await prisma.$queryRaw`SELECT 1`

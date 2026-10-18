@@ -80,7 +80,7 @@ jobs:
       - name: Push image
         run: docker push "$IMAGE:${{ github.sha }}"
       - name: Summary
-        run: echo "Pushed \`$IMAGE:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Pushed $IMAGE:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Release to kind (approval required)
@@ -109,4 +109,4 @@ jobs:
           git commit -am "release: medsight ${GITHUB_SHA::7}" -m "Image: ${IMAGE}:${GITHUB_SHA}" -m "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
-          echo "Released \`${GITHUB_SHA::7}\` — Argo CD will sync within ~3 minutes" >> "$GITHUB_STEP_SUMMARY"
+          echo "Released ${GITHUB_SHA::7}. Argo CD will sync it within about 3 minutes." >> "$GITHUB_STEP_SUMMARY"

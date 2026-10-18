@@ -31,55 +31,53 @@ MedSight turns complex medical reports into clear, actionable summaries using Go
 
 ## DevOps: run on Kubernetes
 
-This branch adds containerisation, Kubernetes, CI/CD, observability and security to the
-[baseline](docs/BASELINE.md). The design, request path, failure boundaries, SLOs and runbook are in
-[docs/OPERATIONS.md](docs/OPERATIONS.md), and verification output is in [docs/EVIDENCE.md](docs/EVIDENCE.md).
+This branch adds a container image, Kubernetes deployment, CI/CD, monitoring and security checks on top of the
+[baseline](docs/BASELINE.md). Design notes, failure handling, SLOs and the runbook are in
+[docs/OPERATIONS.md](docs/OPERATIONS.md). Test results are in [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
-| Path | What it is |
-|---|---|
-| `Dockerfile` | Multi-stage, non-root, patched image; `APP_VERSION` = git SHA |
-| `charts/medsight/` | Helm chart: Deployment, PVC, Service, NetworkPolicy, probes, ServiceMonitor, SLO alerts, Grafana dashboard |
-| `.github/workflows/ci-cd.yml` | Lint/typecheck/test → Trivy scans → build → push to GHCR → approved release commit |
-| `deploy/argocd/application.yaml` | Argo CD app that syncs the chart from git (GitOps) |
-| `deploy/kind-config.yaml`, `deploy/monitoring/` | Local cluster, Prometheus/Grafana values, Jaeger |
-| `observability/otel.js` | Metrics (`:9464`), traces (OTLP to Jaeger) and JSON access logs |
-| `scripts/smoke-test.sh` | User-journey check against the running app |
+What was added:
+
+- `Dockerfile`: multi-stage build, runs as non-root, APP_VERSION set to the git SHA
+- `charts/medsight/`: Helm chart (Deployment, PVC, Service, NetworkPolicy, probes, ServiceMonitor, alerts, dashboard)
+- `.github/workflows/ci-cd.yml`: lint, typecheck, tests, Trivy scans, image build and push, approved release
+- `deploy/argocd/application.yaml`: Argo CD app that deploys the chart from git
+- `deploy/kind-config.yaml`, `deploy/monitoring/`: local cluster, Prometheus/Grafana settings, Jaeger
+- `observability/otel.js`: metrics on port 9464, traces to Jaeger, JSON request logs
+- `scripts/smoke-test.sh`: checks a basic user journey against the running app
 
 ### Prerequisites
 
-Docker (at least 6 GB of memory for the VM), `kind`, `kubectl`, `helm`, `make` and `openssl`
-(`brew install kind helm kubectl`). A Gemini API key is optional: without one the app runs and serves sample
-mode, but uploads cannot be analysed.
+Docker with at least 6 GB of memory, kind, kubectl, helm, make and openssl (`brew install kind helm kubectl`).
+A Gemini API key is optional. Without it the app still runs and shows sample mode, but uploads can't be analysed.
 
 ### Build and deploy
 
 ```bash
-make up        # kind cluster + Argo CD + Prometheus/Grafana + Jaeger (about 5 min)
-cp .env.example .env   # optional: put GEMINI_API_KEY in .env (git-ignored)
+make up        # kind cluster, Argo CD, Prometheus/Grafana and Jaeger (about 5 minutes)
+cp .env.example .env   # optional: add GEMINI_API_KEY
 make secret    # creates the Kubernetes Secret from .env
-make app       # registers the app with Argo CD, which deploys charts/medsight from git
-make status    # Argo sync state + revision, pods, running version
-make smoke     # sign-up → session → patient API → logout against http://localhost:8080
+make app       # registers the app with Argo CD, which deploys it from git
+make status    # Argo CD sync state, pods and running version
+make smoke     # sign up, session, patient API and logout against http://localhost:8080
 ```
 
-Releasing a change: push to `devops` (or `main`). GitHub Actions tests, scans and builds
+To release a change, push to `devops` (or `main`). The pipeline tests, scans and builds
 `ghcr.io/shivamgoeloss/medsight:<sha>`, then waits for approval on the `production` environment
-(Actions run → *Review deployments* → Approve). Approving commits the new image tag, and Argo CD rolls it out
-within about 3 minutes. To build an image locally without CI: `docker build --build-arg APP_VERSION=$(git rev-parse HEAD) -t medsight .`
+(open the run, Review deployments, Approve). After approval it commits the new image tag and Argo CD
+rolls it out within about 3 minutes.
+
+To build the image locally: `docker build --build-arg APP_VERSION=$(git rev-parse HEAD) -t medsight .`
 
 ### Access
 
-| Service | How |
-|---|---|
-| MedSight | http://localhost:8080 |
-| Argo CD, Grafana, Prometheus, Jaeger | `make urls` prints the port-forward command and how to read each generated password |
-
-The Grafana dashboard is **MedSight — service health**.
+- MedSight: http://localhost:8080
+- Argo CD, Grafana, Prometheus and Jaeger: run `make urls` for the port-forward commands and how to get the passwords
+- Grafana dashboard: "MedSight service health"
 
 ### Known limitations
 
-Single node and single replica (SQLite), no PVC backups, Secret created by hand, no alert paging, in-memory
-traces. Full list in [docs/OPERATIONS.md](docs/OPERATIONS.md#10-known-limitations).
+Single node and single replica because of SQLite, no volume backups, the Secret is created by hand, no alert
+paging, and traces are kept in memory. See [docs/OPERATIONS.md](docs/OPERATIONS.md#known-limitations).
 
 ## Getting Started (local development)
 

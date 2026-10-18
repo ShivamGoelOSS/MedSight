@@ -1,189 +1,122 @@
-# Operations guide
+# Operations
 
-How MedSight is built, delivered, run and repaired, and why each choice was made.
+Notes on how MedSight is built, deployed and run, and why.
 
-## 1. Architecture
+## Components
 
-```mermaid
-flowchart LR
-  user([Browser]) -->|http://localhost:8080| docker[Docker port map<br/>127.0.0.1:8080 → node:30080]
-  subgraph kind["kind cluster (single node)"]
-    docker --> svc[Service medsight<br/>NodePort 30080]
-    svc --> pod
-    subgraph ns["namespace medsight"]
-      pod[Pod medsight<br/>init: prisma migrate<br/>app: Next.js :3000, metrics :9464]
-      pod --- pvc[(PVC medsight-data<br/>SQLite + uploads)]
-      secret[[Secret medsight-secrets]] -.-> pod
-      cm[[ConfigMap]] -.-> pod
-    end
-    subgraph mon["namespace monitoring"]
-      prom[Prometheus] -->|scrape :9464| pod
-      graf[Grafana] --> prom
-      graf --> jaeger[Jaeger]
-      pod -->|OTLP :4318| jaeger
-    end
-    subgraph argo["namespace argocd"]
-      argocd[Argo CD]
-    end
-  end
-  pod -->|HTTPS 443| gemini[(Google Gemini API)]
-  gh[GitHub repo<br/>charts/medsight] -->|pull| argocd -->|apply| ns
-  ci[GitHub Actions] -->|push image| ghcr[(GHCR)] -->|pull image| pod
-  ci -->|commit image tag| gh
-```
+- Next.js app: UI, API, login and report analysis. One container, port 3000 for traffic and 9464 for metrics.
+- migrate init container: runs `prisma migrate deploy` before the app starts.
+- PVC medsight-data: holds the SQLite database and uploaded files, so they survive restarts and releases.
+- Gemini API: external dependency, only used when a patient uploads a report.
+- Prometheus and Grafana: metrics, SLO rules and a dashboard.
+- Jaeger: traces, kept in memory.
+- Argo CD: keeps the cluster in sync with the Helm chart in git.
+- GitHub Actions: tests, scans, builds the image and creates the release commit.
 
-| Component | Role | Depends on |
-|---|---|---|
-| Next.js app (one container) | UI, REST API, auth, report analysis | SQLite file, upload directory, Gemini |
-| `migrate` init container | Applies Prisma migrations before the app starts | SQLite file |
-| PVC `medsight-data` (local-path) | Keeps database and uploads across restarts and releases | Node disk |
-| Gemini API | AI summary of uploaded reports | Internet egress, API key |
-| Prometheus + Grafana | Metrics, SLO rules, dashboard | ServiceMonitor on `:9464` |
-| Jaeger | Traces (in memory) | OTLP from the app |
-| Argo CD | Syncs the Helm chart from git to the cluster | GitHub, GHCR |
-| GitHub Actions | Tests, scans, builds and releases | GHCR, the `production` environment |
+Namespaces: medsight (app), monitoring (Prometheus, Grafana, Jaeger), argocd.
 
-## 2. Request path
+## Request path
 
-1. The browser calls `http://localhost:8080`. Docker publishes that port on the host loopback only and forwards
-   it to port `30080` on the kind node container.
-2. kube-proxy's iptables rules map NodePort `30080` to Service `medsight`, which only selects pods that are
-   **Ready**. They forward the request to the pod IP on port `3000`.
-3. Inside the pod, the OpenTelemetry HTTP instrumentation starts a span, Next.js routes the request, and the
-   handler reads the session cookie and queries SQLite through Prisma at `/data/medsight.db` on the PVC.
-4. For `POST /api/analyze-report`, the file is saved to `/data/reports` and sent to Gemini over HTTPS. This is the
-   only egress the NetworkPolicy allows apart from DNS and Jaeger. The outbound call is a child span with its
-   own latency and status metric.
-5. When the response is sent, one JSON access-log line (with `trace_id`) goes to stdout, the histogram
-   `http_server_request_duration` is updated, and the trace is exported to Jaeger.
+1. The browser opens http://localhost:8080. kind publishes this on 127.0.0.1 only and forwards it to port 30080 on the node.
+2. kube-proxy sends NodePort 30080 to the medsight Service, which only includes pods that are Ready, and on to the pod on port 3000.
+3. Next.js handles the request. Signed-in requests read the session cookie and query SQLite at /data/medsight.db on the PVC.
+4. On upload, the file is saved under /data/reports and sent to Gemini over HTTPS.
+5. Each request writes one JSON log line with a trace_id, updates the request duration metric and sends a trace to Jaeger.
 
-## 3. Failure boundaries
+## Failure boundaries
 
-| Failure | User impact | Detected by | What happens / recovery |
-|---|---|---|---|
-| Gemini down, quota hit or no key | Uploads fail with a clear error; login, history, feedback and sample mode keep working | `MedSightGeminiErrors`, dashboard "Gemini API calls" panel, 500s on `/api/analyze-report` | Readiness **does not** check Gemini, so the pod keeps serving. Fix the key/quota and recreate the Secret (`make secret`, then restart the pod) |
-| Database unreadable | All signed-in features fail | `/api/ready` returns 503 → pod removed from Service; `MedSightDown` | Liveness does not check the DB, so there is no restart loop hiding the cause. Check the PVC and logs |
-| App process hangs or crashes | Requests fail | Liveness probe (3 × 10 s) | kubelet restarts the container; the restart count is on the dashboard |
-| Bad release (crash, failed migration, failing readiness) | **None**: the old pod keeps serving | Rollout never completes; `MedSightRolloutStuck` after 3 min | `maxUnavailable: 0` keeps the old ReplicaSet. Revert the commit (section 5) |
-| Node or kind cluster lost | Full outage | `MedSightDown` | Single node by design (local environment). PVC data lives on that node only |
-| Prometheus, Grafana or Jaeger down | None for users; we lose visibility | — | The app does not depend on them; trace export failures are dropped silently |
-| Argo CD down | None for users; new releases wait | `kubectl -n argocd get pods` | The running version is unchanged; sync resumes when Argo CD is back |
+- Gemini down, out of quota or no key: uploads fail with an error, everything else works. Readiness does not check Gemini on purpose, so the pod keeps serving. Seen in the Gemini dashboard panel and the MedSightGeminiErrors alert.
+- Database not usable: /api/ready returns 503 and the pod is taken out of the Service. Liveness does not check the database, so it does not go into a restart loop.
+- App process hangs or crashes: the liveness probe fails and the kubelet restarts the container.
+- Bad release: the new pod never becomes Ready, the old pod keeps serving because maxUnavailable is 0. MedSightRolloutStuck fires after 3 minutes.
+- Node or cluster lost: full outage. This is a single node setup and the volume only exists on that node.
+- Monitoring or Argo CD down: users are not affected. We lose visibility or new releases wait.
 
-## 4. From commit to running version
+## From commit to running version
 
-1. `git push` (any branch) starts `.github/workflows/ci-cd.yml`.
-2. **verify**: `npm ci`, ESLint, `tsc`, Vitest, and `helm lint`/`helm template` on the chart.
-3. **security-scan**: Trivy scans dependencies, committed secrets, and the Dockerfile and Helm chart. Fixable HIGH/CRITICAL findings fail the run.
-4. **build**: Docker image built with `APP_VERSION=<commit SHA>`, scanned by Trivy (fails before pushing), then
-   pushed as `ghcr.io/shivamgoeloss/medsight:<commit SHA>`. Tags are never reused, so a tag identifies exactly one build.
-5. **deploy** (only `devops`/`main`): waits for **manual approval** on the `production` environment, then commits
-   `image.tag: <SHA>` to `charts/medsight/values.yaml` as `release: medsight <sha7>`.
-6. **Argo CD** polls git (about every 3 min), renders the chart and applies it. The Deployment rolls out: the new pod runs
-   migrations, must pass startup and readiness probes, and only then is the old pod terminated.
-7. Verify: `make status` (Argo sync revision, pods, `/api/version`), then `make smoke` (user journey).
+1. A push to any branch runs .github/workflows/ci-cd.yml.
+2. verify: npm ci, lint, typecheck, unit tests, helm lint.
+3. security-scan: Trivy checks dependencies, committed secrets and the Dockerfile and chart. Fixable HIGH or CRITICAL findings fail the run.
+4. build: builds the image with APP_VERSION set to the commit SHA, scans it with Trivy, then pushes ghcr.io/shivamgoeloss/medsight:<sha>.
+5. deploy (devops and main only): waits for approval on the production environment, then commits the new image tag to charts/medsight/values.yaml.
+6. Argo CD picks up the commit (it polls every 3 minutes) and applies the chart. The new pod runs migrations and has to pass its probes before the old pod is removed.
+7. Check with `make status` and `make smoke`.
 
-**Where automation and approval sit:** everything up to a scanned image in the registry is automatic, because it is
-cheap to undo and fully checked. Changing what users run needs a human approval, because releases affect real data
-(migrations) and there is only one environment. After approval, the rollout itself is automatic and gated by probes.
+Everything up to a scanned image is automatic. Changing what users run needs an approval, because there is only one environment, it holds real data, and migrations only go forward.
 
-**Traceability:** commit SHA = image tag = `APP_VERSION` = `/api/version` = `service_version` label in metrics
-and traces = `version` in every log line = `app.kubernetes.io/version` label on the pod. Argo CD shows which
-git revision is synced, and each release commit links to the pipeline run that produced it.
+The running version can be traced through the commit SHA. It is the image tag, the APP_VERSION env var, the /api/version response, the service_version label on metrics and traces, the version field in logs and the app.kubernetes.io/version label on the pod. Argo CD shows the synced git revision, and each release commit links to its pipeline run.
 
-## 5. Release control and rollback
+## Releases and rollback
 
-- **Strategy:** rolling update with `maxSurge: 1, maxUnavailable: 0` and readiness gating. It gives zero
-  downtime and a bad version never receives traffic. Blue-green or canary would need two pods writing to one SQLite
-  file, which the database does not support safely; with Postgres, a canary (Argo Rollouts) would be the next step.
-- **Roll back (preferred, keeps git as the source of truth):** `git revert <bad commit> && git push`, approve the
-  deploy. Or revert only the release commit (`git revert <release commit>`) to return to the previous image without
-  rebuilding.
-- **Emergency rollback:** Argo CD UI → History and Rollback (auto-sync must be paused first, otherwise
-  self-heal returns to git).
-- **Drift:** `selfHeal: true` reverts manual cluster edits (for example `kubectl scale` or `kubectl edit`) back to git;
-  `prune: true` removes resources deleted from git. The PVC is excluded from pruning so patient data cannot be deleted by a sync.
-- **Migrations:** forward-only (Prisma). A rollback that needs a schema downgrade means restoring the PVC
-  from a backup. Schema changes should be backward compatible (expand, then contract).
+- Strategy: rolling update with maxSurge 1 and maxUnavailable 0. No downtime, and a version that fails readiness never gets traffic.
+- Why not canary or blue-green: both need two versions running against the same SQLite file, which is not safe. With Postgres I would use Argo Rollouts with a canary.
+- Rollback: `git revert` the bad commit (or just the release commit) and push, then approve. Git stays the source of truth.
+- Emergency rollback: Argo CD history and rollback, after turning off auto-sync.
+- Drift: selfHeal undoes manual changes in the cluster, prune removes things deleted from git. The PVC is excluded from pruning.
+- Migrations are forward only. Undoing a schema change means restoring the volume, so schema changes should stay backward compatible.
 
-## 6. Reliability targets and runbook
+## SLOs and alerts
 
-**Healthy means:** the pod is Ready, `/api/ready` returns 200, `make smoke` passes (sign up → session → patient API),
-at least 99% of user requests are non-5xx, and p95 GET latency is under 500 ms. Probe traffic is excluded from all of these.
+Healthy means the pod is Ready, /api/ready returns 200, `make smoke` passes, at least 99% of requests are not 5xx and p95 GET latency is under 500 ms. Probe requests are left out of the metrics.
 
-| SLO | SLI (Prometheus) | Target |
-|---|---|---|
-| Availability | `1 - medsight:request_error_ratio:rate1h` | 99% (30-day error budget 1%) |
-| Latency | `medsight:get_latency_p95:rate5m` (GET only; uploads wait on Gemini for 30–60 s by design) | p95 < 500 ms |
+- Availability SLO: 99% of requests are not 5xx. Recording rule medsight:request_error_ratio:rate1h.
+- Latency SLO: p95 of GET requests under 500 ms. Recording rule medsight:get_latency_p95:rate5m. Uploads are POST and wait on Gemini for 30 to 60 seconds, so they are not part of this.
 
-**Verifying recovery** after any action: alert resolves in Prometheus, pod Ready with the expected
-`/api/version`, the dashboard's error ratio returns below 1%, and `make smoke` passes.
+After any fix, recovery is confirmed when the alert clears, the pod is Ready with the expected /api/version, the error ratio on the dashboard is back under 1% and `make smoke` passes.
 
 ### MedSightDown
-No healthy scrape target for 2 min. Run `kubectl -n medsight get pods` and `kubectl -n medsight describe pod -l app.kubernetes.io/name=medsight`
-→ look for CrashLoopBackOff, Pending (PVC/resources) or ImagePullBackOff → `kubectl -n medsight logs deploy/medsight --previous`.
-If the last release caused it, roll back (section 5).
+
+No healthy scrape target for 2 minutes. Run `kubectl -n medsight get pods` and `kubectl -n medsight describe pod -l app.kubernetes.io/name=medsight`. Look for CrashLoopBackOff, Pending or ImagePullBackOff, and check `kubectl -n medsight logs deploy/medsight --previous`. If it started with a release, roll back.
 
 ### MedSightErrorBudgetBurn
-5xx ratio above 14.4% over both 1 h and 5 min, which spends 2% of the monthly budget per hour. Check the dashboard: if the errors are all
-`POST /api/analyze-report` and the Gemini panel shows errors, follow MedSightGeminiErrors. Otherwise find failing paths with
-`kubectl -n medsight logs deploy/medsight | grep '"status":5'`, open a `trace_id` in Jaeger, and roll back if this started with a release.
+
+The 5xx ratio is above 14.4% over both 1 hour and 5 minutes, which uses 2% of the monthly error budget per hour. If the errors are on POST /api/analyze-report and the Gemini panel shows failures, see MedSightGeminiErrors. Otherwise find the failing paths with `kubectl -n medsight logs deploy/medsight | grep '"status":5'` and look up the trace_id in Jaeger.
 
 ### MedSightLatencySLO
-p95 GET above 500 ms for 10 min. Check pod CPU/memory against limits on the dashboard (CPU is unlimited and memory is limited to 768 Mi),
-then slow spans in Jaeger. SQLite lock contention shows up as slow Prisma calls under load.
+
+p95 GET latency above 500 ms for 10 minutes. Check pod CPU and memory on the dashboard, then look for slow spans in Jaeger.
 
 ### MedSightRolloutStuck
-A new version did not become Ready within 3 min. Users are still served by the old pod. Run `kubectl -n medsight get pods`,
-then `kubectl -n medsight logs <new pod> -c migrate` (migration failed?) or `-c medsight`. Fix forward or revert the release commit.
+
+A new version did not become Ready within 3 minutes. Users are still on the old pod. Check `kubectl -n medsight logs <new pod> -c migrate` and `-c medsight`, then fix forward or revert the release commit.
 
 ### MedSightGeminiErrors
-More than 50% of Gemini calls failing for 5 min. A 429 means quota (free tier resets daily); 403 means key or project blocked; no status
-means network or DNS (check NetworkPolicy egress). Other features are unaffected. Update the key with `make secret` and
-`kubectl -n medsight rollout restart deploy/medsight`.
 
-## 7. Security controls
+More than half of Gemini calls failing for 5 minutes. 429 means quota, 403 means the key or project is blocked, no status code means a network problem. Update the key with `make secret` and `kubectl -n medsight rollout restart deploy/medsight`.
 
-| Area | Control |
-|---|---|
-| Secrets | Gemini key only in the Kubernetes Secret created from the local, git-ignored `.env` (`make secret`); never in git, the image or CI logs. Grafana admin password generated at install time. CI uses the short-lived `GITHUB_TOKEN` only |
-| Delivery permissions | Workflow default `contents: read`; `packages: write` only in build, `contents: write` only in deploy; actions pinned to commit SHAs; Trivy image pinned by digest; release requires reviewer approval |
-| Supply chain checks | Trivy on dependencies, secrets, Dockerfile/Helm misconfiguration, and the built image. These checks forced the Next.js 14 → 15 and jspdf 2 → 4 upgrades and the OS patches in the image |
-| Runtime | Non-root UID 1000, read-only root filesystem, all capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`, no npm in the image |
-| Kubernetes API | Dedicated ServiceAccount with no RBAC bindings and no token mounted |
-| Network exposure | App reachable only on `127.0.0.1:8080`; metrics on a ClusterIP service; Grafana, Prometheus, Argo CD and Jaeger only via `kubectl port-forward`. NetworkPolicy default-deny: in on 3000 (and 9464 from `monitoring` only), out only DNS, Jaeger and public HTTPS (private and cluster ranges blocked) |
-| Data | PVC protected from prune/uninstall. App-level controls (bcrypt, httpOnly cookies, authenticated file route, path-traversal check, tested in `tests/storage.test.ts`) were kept |
+## Security
 
-## 8. Linux, networking and cloud concepts in use
+- Secrets: the Gemini key only lives in a Kubernetes Secret created from the local .env file, which is git-ignored. It is not in git, the image or CI. The Grafana password is generated at install time. CI only uses the built-in GITHUB_TOKEN.
+- Pipeline: read-only permissions by default, package write only in build, contents write only in deploy. Actions are pinned to commit SHAs and the Trivy image to a digest. Releases need an approval.
+- Scanning: Trivy on dependencies, secrets, config and the final image. It found critical issues in the original dependencies, which is why Next.js went from 14 to 15 and jspdf from 2 to 4, and why the image installs OS updates.
+- Container: runs as a non-root user with a read-only root filesystem, no capabilities, no privilege escalation and the default seccomp profile. npm is removed from the image.
+- Kubernetes API: the app has its own service account with no permissions and no token mounted.
+- Network: the app is only on 127.0.0.1:8080. Metrics are cluster-internal. Grafana, Prometheus, Argo CD and Jaeger are only reachable with port-forward. The NetworkPolicy allows inbound traffic on 3000 (and 9464 from monitoring), and outbound only to DNS, Jaeger and public HTTPS.
 
-- **Processes and signals:** Node is PID 1 in the container; SIGTERM flushes telemetry before exit; Kubernetes waits up to 30 s.
-- **Users and filesystems:** the app runs as an unprivileged UID; image files are root-owned and read-only; the only writable paths are
-  volumes (`/data`, `/tmp`, `.next/cache`). `fsGroup: 1000` gives the pod group ownership of volumes that support it
-  (local-path's hostPath directories are created world-writable instead, so it is not needed there).
-- **Networking:** loopback-only port publishing, NAT from Docker to kind, kube-proxy iptables for NodePort and Service
-  load balancing, cluster DNS (`jaeger.monitoring.svc`), NetworkPolicy as an L3/L4 firewall with CIDR exceptions for RFC 1918 ranges.
-- **Cloud architecture:** pull-based GitOps (the cluster needs no inbound access from CI), an immutable image registry, a
-  single-AZ and single-instance design with its failure domain stated explicitly (section 3).
+## Linux and networking
 
-## 9. Decisions and what would change them
+- The app runs as an unprivileged user. Image files are owned by root and read-only. The only writable paths are volumes: /data, /tmp and .next/cache.
+- Node is PID 1 in the container. On SIGTERM it flushes telemetry and exits, and Kubernetes waits up to 30 seconds.
+- Traffic goes through Docker port publishing on loopback, kube-proxy iptables rules for the NodePort and Service, and cluster DNS names like jaeger.monitoring.svc.
+- The NetworkPolicy acts as a firewall. Outbound HTTPS is limited to public addresses by excluding the private ranges 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16.
+- Deployment is pull based: GitHub never needs to reach the laptop, Argo CD pulls from GitHub and GHCR.
 
-| Decision | Why | Would change if |
-|---|---|---|
-| Deployment, 1 replica, no HPA | SQLite allows one writer and there is no shared identity to preserve | Moving to Postgres + object storage → 2+ replicas, HPA on CPU/RPS, PodDisruptionBudget, anti-affinity |
-| Not a StatefulSet | One volume and no stable network identity needed; a StatefulSet's rolling update deletes the old pod first (downtime) | Several replicas each needing their own volume |
-| RWO PVC with surge rollout | Works because kind has one node (both pods mount the same node path) | Multi-node: use `Recreate` (brief downtime) or move state out of the pod |
-| NodePort on loopback instead of Ingress | One HTTP service, local only; an Ingress controller adds a component without a need | Several services, TLS or host routing → Gateway API / Ingress with cert-manager |
-| Helm (one chart, one values file) | Templated config with no copied YAML; Argo CD renders it natively | Several environments → `values-<env>.yaml` overlays of the same chart |
-| Argo CD (pull) over CI pushing with kubectl | GitHub cannot reach a laptop cluster; adds drift detection and history | A cloud cluster with OIDC → a CI push would also work, but GitOps would still be preferred |
-| Manual approval before release | One environment holding real data, and migrations are forward-only | Staging plus a good automated test suite → automatic deploy to staging, approval for prod |
-| Rolling update over canary/blue-green | Single-writer database; readiness gating already prevents bad versions serving | Postgres and real traffic → Argo Rollouts canary with metric analysis on the SLO |
-| Logs via `kubectl logs` (JSON, with `trace_id`) | One service; logs are correlated to traces without another stack | More services or retention needs → Loki or a cloud log service |
+## Decisions
 
-## 10. Known limitations
+- Deployment with one replica and no autoscaling, because SQLite only supports one writer. With Postgres and object storage I would run 2 or more replicas with an HPA and a PodDisruptionBudget.
+- Deployment instead of StatefulSet, because there is one volume and no need for a stable pod identity. A StatefulSet also stops the old pod before starting the new one, which means downtime.
+- A ReadWriteOnce volume with a surge rollout works here because kind has one node. On several nodes I would switch to the Recreate strategy or move the data out of the pod.
+- NodePort on loopback instead of an Ingress, because there is one service and it is local. With more services or TLS I would add a Gateway or Ingress.
+- Helm with one values file, so there are no copied manifests. More environments would get their own values file.
+- Argo CD instead of CI running kubectl, because GitHub cannot reach a local cluster and Argo CD also gives drift detection and history.
+- Manual approval before release, because it is the only environment. With a staging environment I would deploy there automatically and keep the approval for production.
+- Logs through kubectl logs, in JSON with trace_id. With more services I would add Loki.
 
-- Single node, single replica: a node failure is a full outage, and the PVC is not backed up.
-- The Secret is created by hand (`make secret`). In a shared environment, use Sealed Secrets, External Secrets or a cloud secret manager.
-- No Alertmanager routing: alerts are visible in Prometheus and Grafana but nobody is paged.
-- Jaeger and Prometheus keep data in memory or ephemeral storage and lose it if their pods restart.
-- The GHCR package must be public, or the cluster needs an image pull secret.
-- Argo CD tracks the `devops` branch until the PR is merged.
-- The app's own limitations (no encryption at rest, no CSRF or rate limiting) are listed in the README and remain out of scope.
+## Known limitations
+
+- Single node and single replica, so a node failure is a full outage. The volume is not backed up.
+- The Secret is created by hand. A shared setup should use Sealed Secrets or an external secret manager.
+- Alerts show in Prometheus and Grafana, but nobody gets paged.
+- Jaeger and Prometheus lose their data if their pods restart.
+- Argo CD follows the devops branch until the PR is merged.
+- The app's own limitations listed in the README (no encryption at rest, no CSRF protection or rate limiting) are out of scope.

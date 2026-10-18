@@ -70,13 +70,13 @@ spec:
             httpGet: { path: /api/health, port: http }
             periodSeconds: 5
             failureThreshold: 24
-          # Liveness: process only — dependency outages must not trigger restarts.
+          # Liveness: process only. A dependency outage should not restart the pod.
           livenessProbe:
             httpGet: { path: /api/health, port: http }
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          # Readiness: database reachable — otherwise stop routing traffic here.
+          # Readiness: database reachable, otherwise stop sending traffic here.
           readinessProbe:
             httpGet: { path: /api/ready, port: http }
             periodSeconds: 5

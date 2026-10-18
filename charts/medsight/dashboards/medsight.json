@@ -1,6 +1,6 @@
 {
   "uid": "medsight",
-  "title": "MedSight \u2014 service health",
+  "title": "MedSight service health",
   "schemaVersion": 39,
   "refresh": "30s",
   "time": {
@@ -53,7 +53,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Availability (non-5xx, 1h) \u2014 SLO 99%",
+      "title": "Availability (non-5xx, 1h) SLO 99%",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -106,7 +106,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "p95 GET latency (5m) \u2014 SLO 500ms",
+      "title": "p95 GET latency (5m) SLO 500ms",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
