@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medsight
+  namespace: medsight
+  labels:
+    app: medsight
+spec:
+  # SQLite allows only one writer, so exactly one replica.
+  replicas: 1
+  # Mark the rollout as failed if the new pod is not Ready within 3 minutes.
+  progressDeadlineSeconds: 180
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # start the new pod first
+      maxUnavailable: 0  # never remove the old pod until the new one is Ready
+  selector:
+    matchLabels:
+      app: medsight
+  template:
+    metadata:
+      labels:
+        app: medsight
+    spec:
+      serviceAccountName: medsight
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Apply database migrations before the app starts.
+        - name: migrate
+          image: medsight
+          command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+          envFrom:
+            - configMapRef:
+                name: medsight-config
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: medsight
+          image: medsight
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: medsight-config
+          env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: medsight-secrets
+                  key: GEMINI_API_KEY
+                  optional: true   # app still runs without it (sample mode)
+          # Give the app up to 2 minutes to start before liveness kicks in.
+          startupProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          # Restart the container if the process stops responding.
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          # Only send traffic when the database works.
+          readinessProbe:
+            httpGet: { path: /api/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: medsight-data
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}
