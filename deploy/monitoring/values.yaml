@@ -1,0 +1,21 @@
+alertmanager:
+  enabled: false        # alerts are viewed in Prometheus/Grafana, no paging locally
+kubeEtcd:
+  enabled: false        # kind control-plane parts can't be scraped from inside
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+prometheus:
+  prometheusSpec:
+    # Pick up monitors and rules from any namespace, including medsight.
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+grafana:
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL

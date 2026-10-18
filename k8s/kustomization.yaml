@@ -8,7 +8,19 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
+  - podmonitor.yaml
+  - alerts.yaml
+# Grafana loads any ConfigMap with the grafana_dashboard label.
+configMapGenerator:
+  - name: medsight-dashboard
+    namespace: medsight
+    files:
+      - dashboard.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
 images:
   - name: medsight
     newName: medsight
-    newTag: local
+    newTag: test3

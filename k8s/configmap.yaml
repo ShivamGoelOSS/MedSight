@@ -6,3 +6,5 @@ metadata:
 data:
   DATABASE_URL: file:/data/medsight.db
   STORAGE_DIR: /data/reports
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger.monitoring.svc:4318
+  OTEL_SERVICE_NAME: medsight

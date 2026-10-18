@@ -1,0 +1,18 @@
+{
+  "uid": "medsight",
+  "title": "MedSight",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    { "type": "stat", "title": "Running version", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 4 },
+      "options": { "textMode": "name", "colorMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "target_info{namespace=\"medsight\"}", "legendFormat": "{{service_version}}" }] },
+    { "type": "timeseries", "title": "Requests per second by status", "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_count{namespace=\"medsight\"}[1m]))", "legendFormat": "{{http_response_status_code}}" }] },
+    { "type": "timeseries", "title": "GET latency p95 (SLO 500ms)", "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{namespace=\"medsight\",http_request_method=\"GET\"}[5m])))", "legendFormat": "p95" }] },
+    { "type": "timeseries", "title": "Gemini calls by status", "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
+      "targets": [{ "expr": "sum by (http_response_status_code) (rate(http_client_request_duration_count{namespace=\"medsight\",server_address=~\".*googleapis.com\"}[5m]))", "legendFormat": "{{http_response_status_code}}" }] }
+  ]
+}

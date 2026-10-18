@@ -28,6 +28,7 @@ COPY --from=build /app/.next ./.next
 COPY --from=build /app/app/generated ./app/generated
 COPY package.json next.config.js prisma.config.ts ./
 COPY prisma ./prisma
+COPY observability ./observability
 USER node
-EXPOSE 3000
-CMD ["node", "node_modules/next/dist/bin/next", "start"]
+EXPOSE 3000 9464
+CMD ["node", "--require", "./observability/otel.js", "node_modules/next/dist/bin/next", "start"]
