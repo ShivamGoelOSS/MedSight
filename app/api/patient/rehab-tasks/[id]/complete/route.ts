@@ -6,7 +6,8 @@ function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export async function POST(_request: Request, { params }: { params: { id: string } }) {
+export async function POST(_request: Request, { params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
   const user = await getCurrentUser()
   if (!user || user.role !== 'PATIENT') {
     return NextResponse.json({ error: 'Not authorized' }, { status: 403 })

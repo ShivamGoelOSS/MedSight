@@ -7,7 +7,8 @@ import OriginalDocument from '@/components/OriginalDocument'
 import ReportAnalysisPanel from '@/components/ReportAnalysisPanel'
 import DoctorFeedbackPanel from '@/components/DoctorFeedbackPanel'
 
-export default async function DoctorReportPage({ params }: { params: { id: string } }) {
+export default async function DoctorReportPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
   const user = await getCurrentUser()
 
   if (!user) redirect('/login')

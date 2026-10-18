@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.github
+.env*
+*.db
+*.db-journal
+storage
+charts
+deploy
+docs
+tests
