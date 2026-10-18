@@ -22,18 +22,70 @@ MedSight turns complex medical reports into clear, actionable summaries using Go
 
 ## Tech Stack
 
-- **Framework**: Next.js 14 (App Router)
+- **Framework**: Next.js 15 (App Router)
 - **Language**: TypeScript
 - **Database**: SQLite via Prisma 7 (`@prisma/adapter-better-sqlite3`)
 - **Auth**: email + password (bcrypt), DB-backed sessions in an httpOnly cookie
 - **AI**: Google Generative AI (Gemini)
 - **Styling**: Tailwind CSS · Material Symbols icons · Inter
 
-## Getting Started
+## DevOps: run on Kubernetes
+
+This branch adds containerisation, Kubernetes, CI/CD, observability and security to the
+[baseline](docs/BASELINE.md). The design, request path, failure boundaries, SLOs and runbook are in
+[docs/OPERATIONS.md](docs/OPERATIONS.md), and verification output is in [docs/EVIDENCE.md](docs/EVIDENCE.md).
+
+| Path | What it is |
+|---|---|
+| `Dockerfile` | Multi-stage, non-root, patched image; `APP_VERSION` = git SHA |
+| `charts/medsight/` | Helm chart: Deployment, PVC, Service, NetworkPolicy, probes, ServiceMonitor, SLO alerts, Grafana dashboard |
+| `.github/workflows/ci-cd.yml` | Lint/typecheck/test → Trivy scans → build → push to GHCR → approved release commit |
+| `deploy/argocd/application.yaml` | Argo CD app that syncs the chart from git (GitOps) |
+| `deploy/kind-config.yaml`, `deploy/monitoring/` | Local cluster, Prometheus/Grafana values, Jaeger |
+| `observability/otel.js` | Metrics (`:9464`), traces (OTLP to Jaeger) and JSON access logs |
+| `scripts/smoke-test.sh` | User-journey check against the running app |
 
 ### Prerequisites
 
-- Node.js 18+
+Docker (at least 6 GB of memory for the VM), `kind`, `kubectl`, `helm`, `make` and `openssl`
+(`brew install kind helm kubectl`). A Gemini API key is optional: without one the app runs and serves sample
+mode, but uploads cannot be analysed.
+
+### Build and deploy
+
+```bash
+make up        # kind cluster + Argo CD + Prometheus/Grafana + Jaeger (about 5 min)
+cp .env.example .env   # optional: put GEMINI_API_KEY in .env (git-ignored)
+make secret    # creates the Kubernetes Secret from .env
+make app       # registers the app with Argo CD, which deploys charts/medsight from git
+make status    # Argo sync state + revision, pods, running version
+make smoke     # sign-up → session → patient API → logout against http://localhost:8080
+```
+
+Releasing a change: push to `devops` (or `main`). GitHub Actions tests, scans and builds
+`ghcr.io/shivamgoeloss/medsight:<sha>`, then waits for approval on the `production` environment
+(Actions run → *Review deployments* → Approve). Approving commits the new image tag, and Argo CD rolls it out
+within about 3 minutes. To build an image locally without CI: `docker build --build-arg APP_VERSION=$(git rev-parse HEAD) -t medsight .`
+
+### Access
+
+| Service | How |
+|---|---|
+| MedSight | http://localhost:8080 |
+| Argo CD, Grafana, Prometheus, Jaeger | `make urls` prints the port-forward command and how to read each generated password |
+
+The Grafana dashboard is **MedSight — service health**.
+
+### Known limitations
+
+Single node and single replica (SQLite), no PVC backups, Secret created by hand, no alert paging, in-memory
+traces. Full list in [docs/OPERATIONS.md](docs/OPERATIONS.md#10-known-limitations).
+
+## Getting Started (local development)
+
+### Prerequisites
+
+- Node.js 20+
 - A Google Gemini API key — see [Getting a Gemini API key](#getting-a-gemini-api-key)
 
 ### Installation
@@ -174,8 +226,10 @@ let model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' })
 
 - `npm run dev` — start the dev server
 - `npm run build` — production build (also type-checks and lints)
-- `npm start` — start the production server
+- `npm start` — start the production server (with metrics, tracing and JSON logs)
 - `npm run lint` — run ESLint
+- `npm run typecheck` — TypeScript check
+- `npm test` — unit tests (Vitest)
 - `npx prisma studio` — browse the local database
 
 ## Supported File Types
@@ -214,7 +268,7 @@ Known gaps, listed so they aren't mistaken for finished work:
 - **No encryption at rest** — the SQLite file and uploaded documents are stored unencrypted
 - **No CSRF protection** on state-changing requests, and **no rate limiting** on login
 - **No password reset or email verification**
-- **No automated test suite** — changes have been verified manually and with throwaway scripts
+- **Limited automated tests** — unit tests cover analytics and file storage; API routes are checked by `scripts/smoke-test.sh`, not unit tests
 - **No email delivery** — reports reach doctors through the dashboard only
 - **Symptoms and treatments aren't recorded** — the visit timeline shows AI-extracted lab
   values and doctor feedback, not what the patient reported or what was prescribed
