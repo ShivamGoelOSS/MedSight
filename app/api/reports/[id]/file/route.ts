@@ -3,7 +3,8 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 import { readReportFile } from '@/lib/storage'
 
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
+export async function GET(_request: Request, { params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
   const user = await getCurrentUser()
   if (!user) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })

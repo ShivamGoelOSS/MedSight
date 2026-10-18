@@ -7,8 +7,9 @@ import PatientHistoryExplorer from '@/components/PatientHistoryExplorer'
 export default async function DoctorPatientsPage({
   searchParams,
 }: {
-  searchParams: { patient?: string }
+  searchParams: Promise<{ patient?: string }>
 }) {
+  const { patient } = await searchParams
   const user = await getCurrentUser()
 
   if (!user) redirect('/login')
@@ -27,7 +28,7 @@ export default async function DoctorPatientsPage({
         <div className="bg-white rounded-2xl border border-slate-200 p-8">
           <h2 className="text-2xl font-black text-background-dark mb-1">Patient History</h2>
           <p className="text-sm text-slate-custom mb-8">Review a patient&apos;s full report timeline.</p>
-          <PatientHistoryExplorer initialPatientId={searchParams.patient ?? null} />
+          <PatientHistoryExplorer initialPatientId={patient ?? null} />
         </div>
       </main>
     </div>

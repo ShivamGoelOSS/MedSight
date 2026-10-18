@@ -21,6 +21,8 @@ ENV NODE_ENV=production \
     APP_VERSION=${APP_VERSION} \
     PORT=3000
 WORKDIR /app
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/app/generated ./app/generated

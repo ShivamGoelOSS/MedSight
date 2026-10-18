@@ -22,7 +22,8 @@ export async function createSession(userId: string) {
     data: { token, userId, expiresAt },
   })
 
-  cookies().set(SESSION_COOKIE, token, {
+  const cookieStore = await cookies()
+  cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
@@ -32,7 +33,7 @@ export async function createSession(userId: string) {
 }
 
 export async function getCurrentUser() {
-  const token = cookies().get(SESSION_COOKIE)?.value
+  const token = (await cookies()).get(SESSION_COOKIE)?.value
   if (!token) return null
 
   const session = await prisma.session.findUnique({
@@ -51,9 +52,10 @@ export async function getCurrentUser() {
 }
 
 export async function destroySession() {
-  const token = cookies().get(SESSION_COOKIE)?.value
+  const cookieStore = await cookies()
+  const token = cookieStore.get(SESSION_COOKIE)?.value
   if (token) {
     await prisma.session.deleteMany({ where: { token } })
   }
-  cookies().delete(SESSION_COOKIE)
+  cookieStore.delete(SESSION_COOKIE)
 }
