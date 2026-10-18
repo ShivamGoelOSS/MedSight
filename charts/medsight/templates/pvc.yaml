@@ -1,0 +1,18 @@
+# Holds the SQLite database and uploaded report files.
+# Kept on `helm uninstall` / Argo CD prune so patient data is never deleted by a deploy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: medsight-data
+  labels: {{- include "medsight.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}

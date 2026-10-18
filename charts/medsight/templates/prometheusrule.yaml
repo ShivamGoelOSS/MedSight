@@ -1,0 +1,72 @@
+{{- if .Values.monitoring.enabled }}
+{{- $sel := printf "namespace=%q,job=\"medsight-metrics\"" .Release.Namespace }}
+{{- $burn := mulf 14.4 (subf 1.0 .Values.monitoring.slo.availability) | printf "%.3f" }}
+{{- $runbook := "https://github.com/ShivamGoelOSS/MedSight/blob/devops/docs/OPERATIONS.md" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: medsight-slo
+  labels: {{- include "medsight.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: medsight.slo
+      rules:
+        # SLI recording rules (probe traffic is excluded at the source).
+        - record: medsight:request_error_ratio:rate5m
+          expr: |
+            sum(rate(http_server_request_duration_count{ {{- $sel }},http_response_status_code=~"5.."}[5m]))
+            / sum(rate(http_server_request_duration_count{ {{- $sel }}}[5m]))
+        - record: medsight:request_error_ratio:rate1h
+          expr: |
+            sum(rate(http_server_request_duration_count{ {{- $sel }},http_response_status_code=~"5.."}[1h]))
+            / sum(rate(http_server_request_duration_count{ {{- $sel }}}[1h]))
+        - record: medsight:get_latency_p95:rate5m
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{ {{- $sel }},http_request_method="GET"}[5m])))
+
+        - alert: MedSightDown
+          expr: absent(up{ {{- $sel }}} == 1)
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: MedSight has no healthy scrape target
+            runbook_url: {{ $runbook }}#medsightdown
+
+        # Multi-window burn rate: at 14.4x the {{ .Values.monitoring.slo.availability }} SLO's error rate,
+        # 2% of the 30-day error budget is consumed in one hour.
+        - alert: MedSightErrorBudgetBurn
+          expr: |
+            medsight:request_error_ratio:rate1h > {{ $burn }}
+            and medsight:request_error_ratio:rate5m > {{ $burn }}
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: 'MedSight 5xx ratio {{ "{{" }} $value | humanizePercentage {{ "}}" }} is burning the error budget'
+            runbook_url: {{ $runbook }}#medsighterrorbudgetburn
+
+        - alert: MedSightLatencySLO
+          expr: medsight:get_latency_p95:rate5m > {{ .Values.monitoring.slo.latencySeconds }}
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: 'MedSight p95 GET latency {{ "{{" }} $value | humanizeDuration {{ "}}" }} exceeds {{ .Values.monitoring.slo.latencySeconds }}s'
+            runbook_url: {{ $runbook }}#medsightlatencyslo
+
+        - alert: MedSightRolloutStuck
+          expr: kube_deployment_status_condition{namespace="{{ .Release.Namespace }}",deployment="medsight",condition="Progressing",status="false"} == 1
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: A MedSight release failed to become Ready; the previous version is still serving
+            runbook_url: {{ $runbook }}#medsightrolloutstuck
+
+        - alert: MedSightGeminiErrors
+          expr: |
+            sum(rate(http_client_request_duration_count{ {{- $sel }},server_address=~".*googleapis.com",http_response_status_code!~"2.."}[10m]))
+            / sum(rate(http_client_request_duration_count{ {{- $sel }},server_address=~".*googleapis.com"}[10m])) > 0.5
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: Most Gemini API calls are failing; report analysis is degraded
+            runbook_url: {{ $runbook }}#medsightgeminierrors
+{{- end }}

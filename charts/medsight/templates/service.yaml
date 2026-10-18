@@ -1,0 +1,30 @@
+# User traffic: NodePort, published only on the host loopback by kind.
+apiVersion: v1
+kind: Service
+metadata:
+  name: medsight
+  labels: {{- include "medsight.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "medsight.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: {{ .Values.service.nodePort }}
+---
+# Metrics: cluster-internal only, scraped by Prometheus.
+apiVersion: v1
+kind: Service
+metadata:
+  name: medsight-metrics
+  labels:
+    {{- include "medsight.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector: {{- include "medsight.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9464
+      targetPort: metrics

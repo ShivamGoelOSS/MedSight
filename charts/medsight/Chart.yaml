@@ -1,0 +1,5 @@
+apiVersion: v2
+name: medsight
+description: MedSight medical report analysis platform
+type: application
+version: 1.0.0

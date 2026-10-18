@@ -1,0 +1,26 @@
+# Argo CD pulls the Helm chart from git and keeps the cluster in sync with it.
+# The cluster is never reachable from GitHub; it only pulls (GitOps).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: medsight
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ShivamGoelOSS/MedSight.git
+    # The PR branch is the deployed branch until the PR is merged; then switch to main.
+    targetRevision: devops
+    path: charts/medsight
+    helm:
+      releaseName: medsight
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: medsight
+  syncPolicy:
+    automated:
+      prune: true      # remove resources deleted from git
+      selfHeal: true   # revert manual changes in the cluster (drift)
+    syncOptions:
+      - CreateNamespace=true
+  revisionHistoryLimit: 10

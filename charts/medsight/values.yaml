@@ -1,0 +1,44 @@
+image:
+  repository: ghcr.io/shivamgoeloss/medsight
+  # Set by the CD pipeline to the git commit SHA that produced the image.
+  tag: "0fede5c9ec1c9c8a1b4c1b2c0d0e0f0a0b0c0d0e"
+  pullPolicy: IfNotPresent
+
+# SQLite allows a single writer, so the app runs as exactly one replica (no HPA).
+replicas: 1
+
+# Rolling update that never removes the serving pod before the new one is Ready:
+# a release that fails its probes never receives traffic.
+# Safe with a ReadWriteOnce volume only because kind has a single node.
+strategy:
+  maxSurge: 1
+  maxUnavailable: 0
+
+service:
+  nodePort: 30080   # mapped to 127.0.0.1:8080 by deploy/kind-config.yaml
+
+config:
+  databaseUrl: file:/data/medsight.db
+  storageDir: /data/reports
+  otlpEndpoint: http://jaeger.monitoring.svc:4318
+
+# Created out-of-band by `make secret`; never stored in git.
+existingSecret: medsight-secrets
+
+persistence:
+  size: 1Gi
+  storageClass: ""   # cluster default (local-path on kind)
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+monitoring:
+  enabled: true                  # ServiceMonitor, PrometheusRule and Grafana dashboard
+  namespace: monitoring          # where Prometheus runs (allowed to scrape :9464)
+  slo:
+    availability: 0.99           # non-5xx share of user requests
+    latencySeconds: 0.5          # p95 for GET requests

@@ -1,0 +1,35 @@
+# Prometheus + Grafana for a single-node kind cluster. Trimmed to what MedSight needs.
+alertmanager:
+  enabled: false        # alerts are evaluated by Prometheus and viewed in its UI; no paging in a local env
+kubeEtcd:
+  enabled: false        # kind control-plane components are not scrapeable from inside the cluster
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from any namespace (the app chart ships its own).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    retention: 3d
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits: { memory: 1Gi }
+
+grafana:
+  # adminPassword is generated at install time by `make platform` (never committed).
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+  additionalDataSources:
+    - name: Jaeger
+      type: jaeger
+      uid: jaeger
+      url: http://jaeger.monitoring.svc:16686
