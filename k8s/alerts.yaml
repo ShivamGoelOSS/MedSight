@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: medsight-alerts
+  namespace: medsight
+spec:
+  groups:
+    - name: medsight
+      rules:
+        - alert: MedSightDown
+          expr: absent(up{namespace="medsight"} == 1)
+          for: 2m
+          annotations:
+            summary: Prometheus cannot reach MedSight
+
+        # SLO: at least 99% of requests succeed. Alert when errors pass 5%.
+        - alert: MedSightHighErrorRate
+          expr: |
+            sum(rate(http_server_request_duration_count{namespace="medsight",http_response_status_code=~"5.."}[5m]))
+            / sum(rate(http_server_request_duration_count{namespace="medsight"}[5m])) > 0.05
+          for: 5m
+          annotations:
+            summary: More than 5% of MedSight requests are failing
+
+        # SLO: p95 GET latency under 500 ms.
+        - alert: MedSightSlow
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{namespace="medsight",http_request_method="GET"}[5m]))) > 0.5
+          for: 10m
+          annotations:
+            summary: MedSight p95 GET latency is above 500 ms
+
+        - alert: MedSightRolloutStuck
+          expr: kube_deployment_status_condition{namespace="medsight",deployment="medsight",condition="Progressing",status="false"} == 1
+          for: 1m
+          annotations:
+            summary: A new version failed to become Ready, the old one is still serving

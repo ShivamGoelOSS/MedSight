@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto'
  * Uploaded reports are kept outside /public so they are never served
  * statically — access always goes through an authenticated route.
  */
-const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'reports')
+const STORAGE_ROOT = process.env.STORAGE_DIR || path.join(process.cwd(), 'storage', 'reports')
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   'application/pdf': 'pdf',

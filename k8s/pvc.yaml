@@ -1,0 +1,14 @@
+# Holds the SQLite database and uploaded files so they survive restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: medsight-data
+  namespace: medsight
+  annotations:
+    # Never let Argo CD delete the volume holding patient data.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

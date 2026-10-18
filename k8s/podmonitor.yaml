@@ -1,0 +1,13 @@
+# Tells Prometheus to scrape the app's metrics port every 15 seconds.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: medsight
+  namespace: medsight
+spec:
+  selector:
+    matchLabels:
+      app: medsight
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s

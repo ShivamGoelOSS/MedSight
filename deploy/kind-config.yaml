@@ -1,0 +1,12 @@
+# Single-node local cluster. NodePort 30080 is published on the host
+# loopback only, so the app is at http://localhost:8080 and not on the network.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: medsight
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

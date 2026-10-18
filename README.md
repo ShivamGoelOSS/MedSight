@@ -4,6 +4,69 @@ MedSight turns complex medical reports into clear, actionable summaries using Go
 
 > **Demo / educational project.** It stores real medical data in a local SQLite file with no encryption at rest, and has not been reviewed for HIPAA/GDPR compliance. See [Limitations](#limitations) before using it with anyone's real health data.
 
+## Running on Kubernetes (DevOps work)
+
+Baseline: adc316cbcaeea0e8e202d0726e0f202a5151a785. Everything below was added on top of it.
+
+### What was added
+
+- Dockerfile: multi-stage build, non-root user, OS patches, APP_VERSION set to the git commit SHA
+- App: /api/health (liveness), /api/ready (database check), /api/version (running commit), unit tests
+- k8s/: Kubernetes manifests applied with Kustomize (Deployment, PVC, Service, ConfigMap, NetworkPolicy, alerts, dashboard)
+- observability/otel.js: Prometheus metrics, traces to Jaeger, JSON request logs with trace_id
+- .github/workflows/ci-cd.yml: lint, typecheck, tests, Trivy scans, image build and push to GHCR, release after approval
+- deploy/: kind cluster config, Argo CD application, Prometheus/Grafana settings, Jaeger
+
+### Prerequisites
+
+Docker (6 GB memory or more), kind, kubectl, helm, openssl. A Gemini API key is optional; without it the app runs in sample mode.
+
+### Setup
+
+1. Create the cluster:
+   kind create cluster --config deploy/kind-config.yaml
+2. Install monitoring:
+   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+   helm install kps prometheus-community/kube-prometheus-stack --version 92.10.1 -n monitoring --create-namespace -f deploy/monitoring/values.yaml --set grafana.adminPassword=$(openssl rand -hex 12)
+   kubectl apply -f deploy/monitoring/jaeger.yaml
+3. Install Argo CD:
+   kubectl create namespace argocd
+   kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.5/manifests/install.yaml
+4. Create the app secret (not stored in git):
+   kubectl create namespace medsight
+   kubectl -n medsight create secret generic medsight-secrets --from-literal=GEMINI_API_KEY="<key or empty>"
+5. Deploy through Argo CD:
+   kubectl apply -f deploy/argocd/application.yaml
+
+### Releasing a change
+
+Push to the devops branch. GitHub Actions runs tests and scans, builds ghcr.io/shivamgoeloss/medsight:<commit sha>,
+then waits for approval on the production environment. After approval it commits the new image tag to
+k8s/kustomization.yaml and Argo CD rolls it out within about 3 minutes. Roll back with git revert.
+
+### Access
+
+- App: http://localhost:8080 (check the version with curl localhost:8080/api/version)
+- Argo CD: kubectl -n argocd port-forward svc/argocd-server 8443:443, user admin, password from secret argocd-initial-admin-secret
+- Grafana: kubectl -n monitoring port-forward svc/kps-grafana 3000:80, user admin, password from secret kps-grafana, dashboard "MedSight"
+- Prometheus: kubectl -n monitoring port-forward svc/kps-kube-prometheus-stack-prometheus 9090
+- Jaeger: kubectl -n monitoring port-forward svc/jaeger 16686
+
+### Design notes
+
+- One replica because SQLite allows one writer; Deployment rather than StatefulSet since only one volume and no stable identity is needed
+- Rolling update with maxUnavailable 0: a new version must pass readiness before the old pod is removed
+- Liveness checks only the process, readiness checks the database, Gemini is not checked so an outage only affects uploads
+- SLOs: 99% of requests succeed, p95 GET latency under 500 ms; alerts for app down, error rate, latency and stuck rollout
+- Security: secret kept out of git, non-root read-only containers, no Kubernetes API token, NetworkPolicy, Trivy blocks vulnerable images, actions pinned to commit SHAs
+
+### Known limitations
+
+- Single node and single replica, no volume backups
+- Secret created by hand; a shared setup would use Sealed Secrets or a secret manager
+- No alert paging, traces kept in memory
+- Manifest-only changes are deployed by Argo CD without the approval step; branch protection would close this
+
 ## Features
 
 ### For patients

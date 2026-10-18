@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- namespace.yaml
+- serviceaccount.yaml
+- configmap.yaml
+- pvc.yaml
+- deployment.yaml
+- service.yaml
+- networkpolicy.yaml
+- podmonitor.yaml
+- alerts.yaml
+# Grafana loads any ConfigMap with the grafana_dashboard label.
+configMapGenerator:
+- files:
+  - dashboard.json
+  name: medsight-dashboard
+  namespace: medsight
+  options:
+    disableNameSuffixHash: true
+    labels:
+      grafana_dashboard: "1"
+images:
+- name: medsight
+  newName: ghcr.io/shivamgoeloss/medsight
+  newTag: 6eb618f48129441ce9eb41d263db380cacb78cb8

@@ -1,0 +1,20 @@
+# Argo CD watches the k8s/ folder on the devops branch and keeps the cluster matching it.
+# GitHub never connects to the cluster; Argo CD pulls from GitHub.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: medsight
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ShivamGoelOSS/MedSight.git
+    targetRevision: devops   # switch to main after the PR is merged
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: medsight
+  syncPolicy:
+    automated:
+      prune: true      # remove things that were deleted from git
+      selfHeal: true   # undo manual changes made directly in the cluster
