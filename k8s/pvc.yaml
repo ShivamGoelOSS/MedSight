@@ -4,6 +4,9 @@ kind: PersistentVolumeClaim
 metadata:
   name: medsight-data
   namespace: medsight
+  annotations:
+    # Never let Argo CD delete the volume holding patient data.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   accessModes: [ReadWriteOnce]
   resources:
